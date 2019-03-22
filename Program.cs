@@ -27,7 +27,7 @@ namespace Workflow
 
     class Program
     {
-        private static readonly string BookmarkPattern = @"(?<app>[^\ ]+)(?:\ +(?<instance>.*))";
+        private static readonly string BookmarkPattern = @"(?<app>[^\ ]+)(?:\ +(?<instance>.*))?";
         private static readonly Regex BookmarkRegex = new Regex(BookmarkPattern, RegexOptions.Compiled | RegexOptions.Singleline);
 
         static void Main(string[] args)
