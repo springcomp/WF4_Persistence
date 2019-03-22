@@ -1,15 +1,20 @@
 ﻿using System;
 using System.Activities;
 using System.Activities.DurableInstancing;
-using System.Configuration;
-using System.Runtime.DurableInstancing;
-using System.Xml.Linq;
+using System.Activities.Persistence;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Configuration;
 using System.Linq;
-using System.Linq.Expressions;
+using System.Runtime.DurableInstancing;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Xml.Linq;
+using System.Xml.Schema;
 
 namespace Workflow
 {
+    // https://social.msdn.microsoft.com/Forums/en-US/8a424c0b-44f8-4670-8d64-9c7142117b55/instancestore-waitforevents-not-firing-when-using-workflowapplication-with-a-workflowidentity?forum=wfprerelease 
     /*
     -- Cleanup database by running the following commands
     
@@ -22,78 +27,191 @@ namespace Workflow
 
     class Program
     {
+        private static readonly string BookmarkPattern = @"(?<app>[^\ ]+)(?:\ +(?<instance>.*))";
+        private static readonly Regex BookmarkRegex = new Regex(BookmarkPattern, RegexOptions.Compiled | RegexOptions.Singleline);
+
         static void Main(string[] args)
         {
+            var cmdLine = CommandLine.Parse(args);
+            var crash = cmdLine.Crash;
+            var operation = cmdLine.Operation;
+
+            string bookmarkName = null;
+            string instanceId = null;
+
+            var hasRunnableInstances = new ManualResetEvent(false);
+            var stopping = new ManualResetEvent(false);
+
+            var monitorRunnableInstances = new AutoResetEvent(false);
+            var hasBookmark = new AutoResetEvent(false);
+
             var store = CreateInstanceStore(out var handle);
 
             try
             {
-                // running Workflow
-
-                var instanceId = RunWorkflow(store);
-
-                var succeeded = WaitForRunnableInstance(store, handle, TimeSpan.FromSeconds(15.0));
-                if (!succeeded)
+                var runnableInstancesDetectionThread = new Thread(unused =>
                 {
-                    Console.Error.WriteLine("Unable to find runnable instances. Aborting.");
-                    return;
+                    while (true)
+                    {
+                        var status = WaitHandle.WaitAny(new WaitHandle[]
+                        {
+                            stopping,
+                            monitorRunnableInstances,
+                        });
+
+                        if (status == 0)
+                            break;
+
+                        if (status == 1)
+                        {
+                            var succeeded = WaitForRunnableInstance(store, handle, TimeSpan.FromSeconds(15.0));
+                            if (succeeded)
+                            {
+                                hasRunnableInstances.Set();
+                            }
+                        }
+                    }
+                });
+
+                var resumptionBookmarkThread = new Thread(unused =>
+                {
+                    while (true)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("Please, press ENTER to exit or type a bookmark name and ENTER to resume the specified bookmark.");
+
+                        var line = Console.ReadLine();
+                        if (line == "")
+                        {
+                            stopping.Set();
+                            break;
+                        }
+                        else
+                        {
+                            var match = BookmarkRegex.Match(line);
+                            if (match.Success)
+                            {
+                                if (match.Groups["instance"] != null)
+                                    instanceId = match.Groups["instance"].Value;
+                                bookmarkName = match.Groups["app"].Value;
+                                hasBookmark.Set();
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine("Invalid syntax.");
+                            }
+                        }
+                    }
+                });
+
+                runnableInstancesDetectionThread.IsBackground = true;
+                runnableInstancesDetectionThread.Start();
+
+                resumptionBookmarkThread.Start();
+
+                monitorRunnableInstances.Set();
+
+                var instances = new Guid[2] { Guid.Empty, Guid.Empty, };
+
+                if (operation == CommandLine.Operations.Run)
+                {
+                    Console.WriteLine("Running instances of two difference workflow apps...");
+
+                    instances[0] = RunWorkflow(store, WorkflowApps.App1);
+                    instances[1] = RunWorkflow(store, WorkflowApps.App2);
                 }
-
-                // resuming Workflow after unload
-
-                ResumeRunnableInstance(store);
-
 
                 while (true)
                 {
-                    Console.WriteLine();
-                    Console.WriteLine("Please, press ENTER to exit or type a bookmark name and ENTER to resume the specified bookmark.");
+                    var status = WaitHandle.WaitAny(new WaitHandle[]
+                    {
+                        stopping,
+                        hasRunnableInstances,
+                        hasBookmark,
+                    });
 
-                    var bookmarkName = Console.ReadLine();
+                    if (status == WaitHandle.WaitTimeout)
+                        throw new TimeoutException();
 
-                    if (String.IsNullOrEmpty(bookmarkName))
-                        return;
+                    if (status == 0)
+                        break;
 
-                    var has = WaitForRunnableInstance(store, handle, TimeSpan.FromSeconds(15.0));
-
-                    if (has)
+                    if (status == 1)
                     {
                         try
                         {
-                            ResumeRunnableInstance(store);
+                            var instance = WorkflowApplication.GetRunnableInstance(store);
+                            if (crash) throw new ApplicationException("CRASHED");
+                            LoadRunnableInstance(store, instance);
                         }
                         catch (InstanceNotReadyException)
                         {
-                            // this is a bug
-                            // there should not be a runnable instance event
-                            // when the workflow is waiting for resumption on a bookmark
+                            // no more runnable instances
 
-                            Console.Error.WriteLine("An attempt to resume a runnable instance has failed.");
-                            Console.WriteLine($"Resuming workflow with bookmark: \"{bookmarkName}\".");
-                            ResumeWorkflow(store, instanceId, bookmarkName);
+                            Console.Error.WriteLine("Resuming runnable instances detection.");
+
+                            hasRunnableInstances.Reset();
+                            monitorRunnableInstances.Set();
                         }
                     }
-                    else
+
+                    if (status == 2)
                     {
+                        System.Diagnostics.Debug.Assert(!String.IsNullOrEmpty(bookmarkName));
                         Console.WriteLine($"Resuming workflow with bookmark: \"{bookmarkName}\".");
-                        ResumeWorkflow(store, instanceId, bookmarkName);
+
+                        var identifier = Guid.Empty;
+
+                        if (String.IsNullOrEmpty(instanceId))
+                        {
+                            var index = 0;
+                            if (bookmarkName == "App2")
+                                index = 1;
+                            identifier = instances[index];
+                        }
+                        else
+                        {
+                            identifier = Guid.Parse(instanceId);
+                        }
+
+                        ResumeWorkflow(store, identifier, bookmarkName);
                     }
                 }
 
                 Console.WriteLine("Done.");
+
+                resumptionBookmarkThread.Join();
+                runnableInstancesDetectionThread.Join();
             }
             finally
             {
             }
         }
 
+        private static readonly XNamespace Workflow40Namespace =
+            XNamespace.Get("urn:schemas-microsoft-com:System.Activities/4.0/properties");
+
+        private static readonly XNamespace Workflow45Namespace =
+            XNamespace.Get("urn:schemas-microsoft-com:System.Activities/4.5/properties");
+
         private static readonly XName WorkflowHostTypePropertyName =
-            XNamespace
-                .Get("urn:schemas-microsoft-com:System.Activities/4.0/properties")
-                .GetName("WorkflowHostType");
+            Workflow40Namespace.GetName("WorkflowHostType");
+
+        private static readonly XName DefinitionIdentityFilterPropertyName =
+            Workflow45Namespace.GetName("DefinitionIdentityFilter");
+
+        private static readonly XName DefinitionIdentitiesPropertyName =
+            Workflow45Namespace.GetName("DefinitionIdentities");
 
         private static readonly XName WorkflowHostType =
-            XName.Get("SpringCompWorkflowHost");
+            Workflow45Namespace.GetName("WorkflowApplication");
+
+        private static readonly Collection<WorkflowIdentity> Identities =
+            new Collection<WorkflowIdentity>(new List<WorkflowIdentity>
+            {
+                new WorkflowIdentity { Name = WorkflowApps.App1.ToString(), Version = new Version(1, 0), },
+                new WorkflowIdentity { Name = WorkflowApps.App2.ToString(), Version = new Version(1, 0), },
+            });
 
         private static readonly IDictionary<XName, object> InstanceValues =
             new Dictionary<XName, object>
@@ -106,7 +224,8 @@ namespace Workflow
 
         private static void ResumeWorkflow(InstanceStore store, Guid instanceId, string bookmarkName)
         {
-            var app = CreateWorkflow(store);
+            var appType = (WorkflowApps)Enum.Parse(typeof(WorkflowApps), bookmarkName);
+            var app = CreateWorkflow(store, appType);
             app.Load(instanceId);
 
             System.Diagnostics.Debug.Assert(app.Id == instanceId);
@@ -114,28 +233,51 @@ namespace Workflow
             app.ResumeBookmark(bookmarkName, new object(), TimeSpan.FromSeconds(10.0));
         }
 
-        private static Guid RunWorkflow(InstanceStore store)
+        private static Guid RunWorkflow(InstanceStore store, WorkflowApps appType)
         {
-            var app = CreateWorkflow(store);
+            var app = CreateWorkflow(store, appType);
             app.Run();
+
+            Console.WriteLine($"{appType} instance {app.Id:d} is running.");
 
             return app.Id;
         }
 
-        private static void ResumeRunnableInstance(InstanceStore store)
+        private static void LoadRunnableInstance(InstanceStore store, WorkflowApplicationInstance appInstance)
         {
-            var app = CreateWorkflow(store);
+            var app = CreateWorkflow(store, WorkflowApps.App1);
+            switch (appInstance.DefinitionIdentity.Name)
+            {
+                case "App1":
+                    break;
+                case "App2":
+                    app = CreateWorkflow(store, WorkflowApps.App2);
+                    break;
+            }
+
+            app.Load(appInstance);
+            app.Run();
+        }
+
+        private static void LoadRunnableInstance(InstanceStore store)
+        {
+            var app = CreateWorkflow(store, WorkflowApps.App1);
             app.LoadRunnableInstance();
             app.Run();
         }
 
-        private static WorkflowApplication CreateWorkflow(InstanceStore store)
+        private static WorkflowApplication CreateWorkflow(InstanceStore store, WorkflowApps appType = WorkflowApps.App1)
         {
-            var activity = new WorkflowApp();
+            var identity = new WorkflowIdentity { Name = appType.ToString(), Version = new Version(1, 0), };
 
-            var app = new WorkflowApplication(activity);
-            app.AddInitialInstanceValues(InstanceValues);
-            app.InstanceStore = store;
+            Activity activity = new WorkflowApp1();
+            if (appType == WorkflowApps.App2)
+                activity = new WorkflowApp2();
+
+            var whoAmI = new PP(appType);
+
+            var app = new WorkflowApplication(activity, identity) { InstanceStore = store };
+            app.Extensions.Add(whoAmI);
 
             SetEvents(app);
 
@@ -183,7 +325,7 @@ namespace Workflow
             app.Aborted = e =>
             {
                 Console.Error.WriteLine($"EVT: Aborting workflow:");
-                foreach (var text in e.Reason.Message.Split(new []{'.'}, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()))
+                foreach (var text in e.Reason.Message.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()))
                     Console.Error.WriteLine($"EVT: {text}");
             };
         }
@@ -256,9 +398,14 @@ namespace Workflow
 
         private static InstanceOwner CreateWorkflowInstanceOwner(InstanceStore store, InstanceHandle handle)
         {
-            var command = new CreateWorkflowOwnerCommand
+            var command = new CreateWorkflowOwnerWithIdentityCommand
             {
-                InstanceOwnerMetadata = { { WorkflowHostTypePropertyName, new InstanceValue(WorkflowHostType) }, },
+                InstanceOwnerMetadata =
+                {
+                    { WorkflowHostTypePropertyName, new InstanceValue(WorkflowHostType) },
+                    { DefinitionIdentityFilterPropertyName, new InstanceValue(WorkflowIdentityFilter.Any) },
+                    { DefinitionIdentitiesPropertyName, new InstanceValue(new Collection<WorkflowIdentity>()) },
+                },
             };
 
             var owner = store.Execute(handle, command, TimeSpan.FromMinutes(1.0)).InstanceOwner;
@@ -286,4 +433,34 @@ namespace Workflow
 
         #endregion
     }
+
+    public enum WorkflowApps
+    {
+        App1,
+        App2,
+    }
+
+    public sealed class PP : PersistenceParticipant, IAmWhoSeeWhatIDidThere
+    {
+        private readonly WorkflowApps appType_;
+
+        public PP(WorkflowApps appType)
+        {
+            appType_ = appType;
+        }
+
+        public WorkflowApps WhoAmI => appType_;
+
+        protected override void CollectValues(out IDictionary<XName, object> readWriteValues, out IDictionary<XName, object> writeOnlyValues)
+        {
+            readWriteValues = new Dictionary<XName, object> { { XName.Get("WhoAmI"), appType_.ToString() } };
+            base.CollectValues(out readWriteValues, out writeOnlyValues);
+        }
+    }
+
+    public interface IAmWhoSeeWhatIDidThere
+    {
+        WorkflowApps WhoAmI { get; }
+    }
+
 }

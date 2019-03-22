@@ -7,9 +7,12 @@ namespace Workflow
     {
         protected override void Execute(NativeActivityContext context)
         {
-            const string bookmarkName = "bookmark";
+            var identity = context.GetExtension<IAmWhoSeeWhatIDidThere>();
 
-            Console.WriteLine($"LOG: creating bookmark named: \"{bookmarkName}\".");
+            var appName = identity.WhoAmI.ToString();
+            var bookmarkName = appName;
+            
+            Console.WriteLine($"{appName}: creating bookmark named: \"{bookmarkName}\".");
             context.CreateBookmark(bookmarkName, OnResumeBookmark);
         }
 

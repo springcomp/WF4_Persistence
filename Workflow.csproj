@@ -52,17 +52,25 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BookmarkActivity.cs" />
+    <Compile Include="CommandLine.cs" />
+    <Compile Include="Options.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <XamlAppDef Include="WorkflowApp.xaml">
-      <SubType>Designer</SubType>
+    <None Include="App.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <XamlAppDef Include="WorkflowApp1.xaml">
       <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
     </XamlAppDef>
   </ItemGroup>
   <ItemGroup>
-    <None Include="App.config" />
+    <XamlAppDef Include="WorkflowApp2.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </XamlAppDef>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
