@@ -69,6 +69,10 @@ namespace Workflow
                             {
                                 hasRunnableInstances.Set();
                             }
+                            else
+                            {
+                                monitorRunnableInstances.Set();
+                            }
                         }
                     }
                 });
