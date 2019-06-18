@@ -30,6 +30,54 @@ namespace Workflow
         private static readonly string BookmarkPattern = @"(?<app>[^\ ]+)(?:\ +(?<instance>.*))?";
         private static readonly Regex BookmarkRegex = new Regex(BookmarkPattern, RegexOptions.Compiled | RegexOptions.Singleline);
 
+        // This program runs multiple threads:
+
+        // RunnableInstancesDetectionThread
+        //      This thread periodically polls the database and waits for workflow instances
+        //      in the "runnable" state. When that happens, it raises and event and pauses
+        //      until runnable instances have been processed (by another thread).
+        //
+        // ResumptionBookmarkThread
+        //      This is the user interface thread using console input for a user to type commands.
+        //      It implements a REPL (read-eval-print-loop) environment where a user can issue
+        //      bookmark resumption commands. When this happens, the thread raises an event
+        //      for bookmarks to be processed (by another thread).
+        //      Valid commands have the following format:
+        //      <app-name>[ <instance-id>]
+        //
+        // ProcessingThread
+        //      This thread waits for events raised from other sources.
+        //      Valid events are:
+        //      - HasRunnableInstances 
+        //      - HasBookmark
+        //
+        //      When "HasBookmark" is raised, the thread resumes the
+        //      corresponding in-memory workflow instance.
+        //
+        //      When "HasRunnableInstance" is raised, the thread attempts
+        //      to call the "LoadRunnableInstance" method to load the
+        //      corresponding workflow instance from the database.
+        //      This must be done until the "LoadRunnableInstance" method
+        //      raises and "InstanceNotReadyException". This signals that
+        //      all runnable instances from the database have been processed.
+        //      At this stage, the thread raises and event to resume the
+        //      RunnableInstancesDetectionThread.
+
+        // CHALLENGES:
+        //
+        //      In order to be able to resume a persisted runnable workflow instance
+        //      it is necessary to know the workflow identity in order to match it
+        //      with the corresponding XAML definition. This sample associates a
+        //      unique identity for each XAML definition that is automatically
+        //      persisted to the database and can be retrieved on the "HasRunnableInstance" event.
+        //
+        //      This sample persists and unloads workflow instances when bookmarked.
+        //      Therefore, upon resumption, the a new instance is created with the corresponding
+        //      XAML definition and the workflow execution is resumed.
+        //      In crosscut, we try to prevent workflow instances from being unloaded if another
+        //      message is received in a short period of time. Try to prevent workflow instances
+        //      from being unloaded with this sample first.
+
         static void Main(string[] args)
         {
             var cmdLine = CommandLine.Parse(args);
@@ -49,6 +97,11 @@ namespace Workflow
 
             try
             {
+                // RunnableInstancesDetectionThread
+                //      This thread periodically polls the database and waits for workflow instances
+                //      in the "runnable" state. When that happens, it raises and event and pauses
+                //      until runnable instances have been processed (by another thread).
+                //
                 var runnableInstancesDetectionThread = new Thread(unused =>
                 {
                     while (true)
@@ -77,6 +130,14 @@ namespace Workflow
                     }
                 });
 
+                // ResumptionBookmarkThread
+                //      This is the user interface thread using console input for a user to type commands.
+                //      It implements a REPL (read-eval-print-loop) environment where a user can issue
+                //      bookmark resumption commands. When this happens, the thread raises an event
+                //      for bookmarks to be processed (by another thread).
+                //      Valid commands have the following format:
+                //      <app-name>[ <instance-id>]
+                //
                 var resumptionBookmarkThread = new Thread(unused =>
                 {
                     while (true)
@@ -117,6 +178,9 @@ namespace Workflow
 
                 var instances = new Guid[2] { Guid.Empty, Guid.Empty, };
 
+                // The application starts a instance for two different workflow types
+                // Instances are kept in memory for the duration of their lifetime.
+
                 if (operation == CommandLine.Operations.Run)
                 {
                     Console.WriteLine("Running instances of two difference workflow apps...");
@@ -124,6 +188,24 @@ namespace Workflow
                     instances[0] = RunWorkflow(store, WorkflowApps.App1);
                     instances[1] = RunWorkflow(store, WorkflowApps.App2);
                 }
+
+                // ProcessingThread
+                //      This thread waits for events raised from other sources.
+                //      Valid events are:
+                //      - HasRunnableInstances 
+                //      - HasBookmark
+                //
+                //      When "HasBookmark" is raised, the thread resumes the
+                //      corresponding in-memory workflow instance.
+                //
+                //      When "HasRunnableInstance" is raised, the thread attempts
+                //      to call the "LoadRunnableInstance" method to load the
+                //      corresponding workflow instance from the database.
+                //      This must be done until the "LoadRunnableInstance" method
+                //      raises and "InstanceNotReadyException". This signals that
+                //      all runnable instances from the database have been processed.
+                //      At this stage, the thread raises and event to resume the
+                //      RunnableInstancesDetectionThread.
 
                 while (true)
                 {
@@ -137,9 +219,11 @@ namespace Workflow
                     if (status == WaitHandle.WaitTimeout)
                         throw new TimeoutException();
 
+                    // stopping
                     if (status == 0)
                         break;
 
+                    // hasRunnableInstances
                     if (status == 1)
                     {
                         try
@@ -159,6 +243,7 @@ namespace Workflow
                         }
                     }
 
+                    // hasBookmark
                     if (status == 2)
                     {
                         System.Diagnostics.Debug.Assert(!String.IsNullOrEmpty(bookmarkName));
@@ -260,13 +345,6 @@ namespace Workflow
             }
 
             app.Load(appInstance);
-            app.Run();
-        }
-
-        private static void LoadRunnableInstance(InstanceStore store)
-        {
-            var app = CreateWorkflow(store, WorkflowApps.App1);
-            app.LoadRunnableInstance();
             app.Run();
         }
 
