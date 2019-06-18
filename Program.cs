@@ -34,7 +34,7 @@ namespace Workflow
 
         // RunnableInstancesDetectionThread
         //      This thread periodically polls the database and waits for workflow instances
-        //      in the "runnable" state. When that happens, it raises and event and pauses
+        //      in the "runnable" state. When that happens, it raises an event and pauses
         //      until runnable instances have been processed (by another thread).
         //
         // ResumptionBookmarkThread
@@ -60,7 +60,7 @@ namespace Workflow
         //      This must be done until the "LoadRunnableInstance" method
         //      raises and "InstanceNotReadyException". This signals that
         //      all runnable instances from the database have been processed.
-        //      At this stage, the thread raises and event to resume the
+        //      At this stage, the thread raises an event to resume the
         //      RunnableInstancesDetectionThread.
 
         // CHALLENGES:
@@ -99,7 +99,7 @@ namespace Workflow
             {
                 // RunnableInstancesDetectionThread
                 //      This thread periodically polls the database and waits for workflow instances
-                //      in the "runnable" state. When that happens, it raises and event and pauses
+                //      in the "runnable" state. When that happens, it raises an event and pauses
                 //      until runnable instances have been processed (by another thread).
                 //
                 var runnableInstancesDetectionThread = new Thread(unused =>
@@ -204,7 +204,7 @@ namespace Workflow
                 //      This must be done until the "LoadRunnableInstance" method
                 //      raises and "InstanceNotReadyException". This signals that
                 //      all runnable instances from the database have been processed.
-                //      At this stage, the thread raises and event to resume the
+                //      At this stage, the thread raises an event to resume the
                 //      RunnableInstancesDetectionThread.
 
                 while (true)
