@@ -16,6 +16,10 @@ namespace Workflow
 {
     // https://social.msdn.microsoft.com/Forums/en-US/8a424c0b-44f8-4670-8d64-9c7142117b55/instancestore-waitforevents-not-firing-when-using-workflowapplication-with-a-workflowidentity?forum=wfprerelease 
     /*
+
+    Create database from scripts located in the following folder:
+    C:\Windows\Microsoft.NET\Framework\v4.0.30319\SQL\en\
+
     -- Cleanup database by running the following commands
     
     DELETE FROM [System.Activities.DurableInstancing].[IdentityOwnerTable]
